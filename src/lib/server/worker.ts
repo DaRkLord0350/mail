@@ -11,7 +11,7 @@
 //    transaction — if anything fails, the whole claim rolls back.
 //  • Finalize writes are fenced by lockToken, so a worker whose lock expired
 //    can never overwrite a row that was recovered and re-claimed.
-//  • Resend idempotency keys make a recovered in-flight send dedupe on Resend.
+//  • Gmail API idempotency keys make a recovered in-flight send dedupe on Gmail API.
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./db";
@@ -20,12 +20,12 @@ import { env } from "./env";
 import { getSettings, formatSender, type EffectiveSettings } from "./settings";
 import { dayKey, GLOBAL_SCOPE, getUsage, reserveQuota } from "./quota";
 import { buildOutgoing } from "./compose";
-import { getTransport, type EmailTransport, type OutgoingEmail } from "@/lib/email/resend";
+import { getTransport, type EmailTransport, type OutgoingEmail } from "@/lib/email/Gmail API";
 import { classifySendError, retryDelayMs } from "@/lib/email/errors";
 import type { WorkerResultDTO } from "@/lib/types";
 
 export const STALE_LOCK_MINUTES = 10;
-/** Resend keeps idempotency keys for 24h; past this, a resend could duplicate. */
+/** Gmail API keeps idempotency keys for 24h; past this, a Gmail API could duplicate. */
 export const IDEMPOTENCY_WINDOW_HOURS = 23;
 /** Consecutive identical permanent failures that halt sending. */
 export const PERMANENT_BREAKER = 3;
@@ -88,7 +88,7 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /** PROCESSING rows whose worker died: back to PENDING (same idempotency key), or FAILED if too old to dedupe. */
 export async function recoverStaleDeliveries(): Promise<number> {
-  const unknownMsg = `Worker stopped mid-send more than ${IDEMPOTENCY_WINDOW_HOURS}h ago; the email may or may not have been delivered. Check Resend before retrying.`;
+  const unknownMsg = `Worker stopped mid-send more than ${IDEMPOTENCY_WINDOW_HOURS}h ago; the email may or may not have been delivered. Check Gmail API before retrying.`;
   const unknown = await prisma.$queryRaw<{ leadId: string }[]>`
     UPDATE ${t("EmailDelivery")}
     SET "status" = 'FAILED', "errorKind" = 'UNKNOWN_OUTCOME', "errorCode" = 'unknown_outcome',
@@ -265,7 +265,7 @@ async function sendAndFinalize(
   transport: EmailTransport,
 ): Promise<{ outcome: Outcome; message?: string; errorKind?: string }> {
   const fence = { id: d.id, status: "PROCESSING" as const, lockToken: d.lockToken };
-  // A retry that reuses the idempotency key must resend the byte-identical
+  // A retry that reuses the idempotency key must Gmail API the byte-identical
   // payload (settings such as From/Reply-To may have changed in between), so
   // the payload is frozen on the row before the first request with that key.
   let outgoing: OutgoingEmail;
@@ -282,7 +282,7 @@ async function sendAndFinalize(
   const res = await transport.send(outgoing);
 
   if (res.ok) {
-    // Only mark SENT after Resend confirmed the request, storing its message id.
+    // Only mark SENT after Gmail API confirmed the request, storing its message id.
     const now = new Date();
     const ok = await prisma.$transaction(async (tx) => {
       const u = await tx.emailDelivery.updateMany({
@@ -294,7 +294,7 @@ async function sendAndFinalize(
       return true;
     });
     if (!ok) {
-      console.warn(`[mail] delivery ${d.id}: sent (resend id ${res.id}) but lock was lost; not overwriting.`);
+      console.warn(`[mail] delivery ${d.id}: sent (Gmail API id ${res.id}) but lock was lost; not overwriting.`);
       return { outcome: "lost_lock" };
     }
     return { outcome: "sent" };
@@ -305,12 +305,12 @@ async function sendAndFinalize(
   const common = { lockedAt: null, lockToken: null, errorMessage: msg.slice(0, 1000), errorCode: res.error.code, errorKind: cls.kind };
 
   if (cls.haltAll) {
-    // Global problem (API key, sender domain, Resend account quota): don't burn
+    // Global problem (API key, sender domain, Gmail API account quota): don't burn
     // this lead's retries, halt everything until the user fixes it.
     const reason = `Sending halted: ${msg}`;
     await prisma.$transaction(async (tx) => {
       const u = await tx.emailDelivery.updateMany({ where: fence, data: { ...common, status: "PENDING", attempts: { decrement: 1 }, idempotencyKey: null, payload: Prisma.DbNull, nextAttemptAt: new Date() } });
-      // Resend refused the request outright (key / sender / account quota), so
+      // Gmail API refused the request outright (key / sender / account quota), so
       // nothing was sent: give the reserved daily-quota slot back. Global and
       // campaign in the same fixed order as the claim.
       if (u.count === 1) await refundQuota(tx, d.quotaDate, d.campaignId);
@@ -380,8 +380,8 @@ export async function runWorker(opts: WorkerOptions = {}): Promise<WorkerResultD
     const state = await prisma.workerState.findUnique({ where: { id: 1 } });
     if (state?.haltedReason) {
       result.stopReason = "auth_error";
-      result.message = `${state.haltedReason} — fix the problem, then run "Test Resend Connection" in Settings or resume a campaign.`;
-    } else if (!opts.transport && !env.resendApiKey) {
+      result.message = `${state.haltedReason} — fix the problem, then run "Test Gmail API Connection" in Settings or resume a campaign.`;
+    } else if (!opts.transport && !env.Gmail APIApiKey) {
       result.stopReason = "not_configured";
       result.message = "RESEND_API_KEY is not configured — nothing was sent.";
     } else if (!formatSender(settings)) {
@@ -450,7 +450,7 @@ export async function runWorker(opts: WorkerOptions = {}): Promise<WorkerResultD
               streak.push({ id, leadId, campaignId, quotaDate });
               if (streak.length >= PERMANENT_BREAKER) {
                 const reason = `Sending halted: ${PERMANENT_BREAKER} emails in a row failed with the same error ("${r.message}"). This looks like a configuration problem.`;
-                // Resend rejected these outright (nothing was sent): put them back
+                // Gmail API rejected these outright (nothing was sent): put them back
                 // in the queue so they go out once the configuration is fixed,
                 // and give their daily-quota slots back.
                 const tripped = streak;
