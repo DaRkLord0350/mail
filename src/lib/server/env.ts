@@ -30,7 +30,6 @@ export const env = {
   get cronSecret() { return str("CRON_SECRET"); },
   get adminPassword() { return str("ADMIN_PASSWORD"); },
   get sessionSecret() { return str("SESSION_SECRET"); },
-  get unsubscribeSecret() { return str("UNSUBSCRIBE_SECRET") || str("SESSION_SECRET"); },
   get appUrl() { return (str("APP_URL") || "http://localhost:3000").replace(/\\/+$/, ""); },
   get timezone() { return str("APP_TIMEZONE") || "Asia/Kolkata"; },
   get enableInternalWorker() { return str("ENABLE_INTERNAL_WORKER") === "true"; },
