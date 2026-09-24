@@ -2,8 +2,10 @@
 import { google } from "googleapis";
 import type { SendErrorInfo } from "./errors";
 import { env } from "@/lib/server/env";
+import { prisma } from "@/lib/server/db";
 
-export interface OutgoingEmail { from: string; to: string; subject: string; text: string; html: string; replyTo?: string; headers?: Record<string, string>; tags?: { name: string; value: string }[]; idempotencyKey?: string; }
+export interface EmailAttachment { filename: string; contentType: "application/pdf"; contentBase64: string; }
+export interface OutgoingEmail { from: string; to: string; subject: string; text: string; html: string; replyTo?: string; headers?: Record<string, string>; tags?: { name: string; value: string }[]; idempotencyKey?: string; attachments?: EmailAttachment[]; }
 export type SendResult = { ok: true; id: string } | { ok: false; error: SendErrorInfo };
 export interface EmailTransport { send(email: OutgoingEmail): Promise<SendResult>; testConnection(fromEmail?: string): Promise<{ ok: boolean; message: string }>; }
 
@@ -11,18 +13,29 @@ const SEND_TIMEOUT_MS = 20_000;
 const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 
 function oauthClient() {
-  if (!env.googleClientId || !env.googleClientSecret || !env.googleRedirectUri) {
-    throw new Error("Google Gmail OAuth is not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI.");
-  }
+  if (!env.googleClientId || !env.googleClientSecret || !env.googleRedirectUri) throw new Error("Google Gmail OAuth is not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI.");
   return new google.auth.OAuth2(env.googleClientId, env.googleClientSecret, env.googleRedirectUri);
 }
 
 function toBase64Url(input: Buffer): string { return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); }
 function encodeHeader(value: string): string { return /^[\x00-\x7F]*$/.test(value) ? value : "=?UTF-8?B?" + Buffer.from(value, "utf8").toString("base64") + "?="; }
+function wrapBase64(value: string): string { return value.replace(/.{1,76}/g, "$&\r\n").replace(/\r\n$/, ""); }
+function attachmentPart(a: EmailAttachment): string {
+  const safeName = a.filename.replace(/[\r\n"]+/g, "_");
+  return `Content-Type: ${a.contentType}; name="${safeName}"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename="${safeName}"\r\n\r\n${wrapBase64(a.contentBase64)}`;
+}
 function buildRaw(email: OutgoingEmail): string {
-  const headers = ["From: " + email.from, "To: " + email.to, "Subject: " + encodeHeader(email.subject), email.replyTo ? "Reply-To: " + email.replyTo : "", "MIME-Version: 1.0", "Content-Type: text/html; charset=UTF-8"].filter(Boolean).join("\r\n");
   const html = email.html || email.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
-  return toBase64Url(Buffer.from(headers + "\r\n\r\n" + html, "utf8"));
+  const common = ["From: " + email.from, "To: " + email.to, "Subject: " + encodeHeader(email.subject), email.replyTo ? "Reply-To: " + email.replyTo : "", "MIME-Version: 1.0"].filter(Boolean).join("\r\n");
+  let raw: string;
+  if (!email.attachments?.length) {
+    raw = common + "\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" + html;
+  } else {
+    const boundary = "----=_NexVentory_" + Math.random().toString(36).slice(2);
+    const parts = [`Content-Type: text/html; charset=UTF-8\r\n\r\n${html}`, ...email.attachments.map(attachmentPart)];
+    raw = common + `\r\nContent-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n` + parts.map((part) => `--${boundary}\r\n${part}\r\n`).join("") + `--${boundary}--`;
+  }
+  return toBase64Url(Buffer.from(raw, "utf8"));
 }
 function getAuthorizedClient() {
   if (!env.googleRefreshToken) throw new Error("GOOGLE_REFRESH_TOKEN is not configured. Complete the OAuth flow and store the refresh token in the server environment.");
@@ -31,12 +44,28 @@ function getAuthorizedClient() {
   return auth;
 }
 
+function tagValue(email: OutgoingEmail, name: string): string | null { return email.tags?.find((t) => t.name === name)?.value ?? null; }
+
+async function resolveStoredAttachment(email: OutgoingEmail): Promise<OutgoingEmail> {
+  if (email.attachments?.length) return email;
+  const campaignId = tagValue(email, "campaign");
+  const templateId = tagValue(email, "template");
+  const row = campaignId
+    ? await prisma.campaign.findUnique({ where: { id: campaignId }, select: { attachmentName: true, attachmentMimeType: true, attachmentData: true } })
+    : templateId
+      ? await prisma.template.findUnique({ where: { id: templateId }, select: { attachmentName: true, attachmentMimeType: true, attachmentData: true } })
+      : null;
+  if (!row?.attachmentName || row.attachmentMimeType !== "application/pdf" || !row.attachmentData) return email;
+  return { ...email, attachments: [{ filename: row.attachmentName, contentType: "application/pdf", contentBase64: row.attachmentData }] };
+}
+
 export const gmailTransport: EmailTransport = {
   async send(email) {
     try {
+      const outgoing = await resolveStoredAttachment(email);
       const auth = getAuthorizedClient();
       const gmail = google.gmail({ version: "v1", auth });
-      const result = await Promise.race([gmail.users.messages.send({ userId: "me", requestBody: { raw: buildRaw(email) } }), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gmail API timeout")), SEND_TIMEOUT_MS))]);
+      const result = await Promise.race([gmail.users.messages.send({ userId: "me", requestBody: { raw: buildRaw(outgoing) } }), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gmail API timeout")), SEND_TIMEOUT_MS))]);
       const id = result.data.id;
       if (!id) return { ok: false, error: { code: "application_error", message: "Gmail API returned no message id.", statusCode: null } };
       return { ok: true, id };
@@ -55,9 +84,7 @@ export const gmailTransport: EmailTransport = {
       if (!access.token) throw new Error("Google did not return an access token. Reconnect Gmail OAuth.");
       const tokenInfo = await auth.getTokenInfo(access.token);
       const scopes = tokenInfo.scopes ?? [];
-      if (!scopes.includes(GMAIL_SEND_SCOPE)) {
-        throw new Error("Gmail OAuth token does not include gmail.send. Reconnect Gmail OAuth and approve the Gmail sending permission.");
-      }
+      if (!scopes.includes(GMAIL_SEND_SCOPE)) throw new Error("Gmail OAuth token does not include gmail.send. Reconnect Gmail OAuth and approve the Gmail sending permission.");
       const account = tokenInfo.email || fromEmail || env.fromEmail || "Gmail account";
       return { ok: true, message: "Connected ✓ — " + account + " (gmail.send scope verified)." };
     } catch (e) {
@@ -66,7 +93,6 @@ export const gmailTransport: EmailTransport = {
   },
 };
 
-// Temporary compatibility export for existing internal imports; it is the Gmail transport, not Resend.
 export const resendTransport = gmailTransport;
 let transport: EmailTransport = gmailTransport;
 export function getTransport(): EmailTransport { return transport; }
