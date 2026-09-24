@@ -13,6 +13,7 @@ import { Card } from "@/components/ui/card";
 import { ErrorState, PageHeader, PageSkeleton } from "@/components/ui/feedback";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { TemplateComposer, type ComposerValue } from "@/components/template-composer";
+import { TemplateAttachment } from "@/components/templates/template-attachment";
 
 const EMPTY: ComposerValue = { name: "", subject: "", body: "" };
 
@@ -33,15 +34,7 @@ export function TemplateEditor({ templateId }: { templateId: string | null }) {
         <PageHeader title="Template" back={back} />
         <Card>
           {errorStatus === 404 ? (
-            <ErrorState
-              title="Template not found"
-              message="It may have been deleted."
-              action={
-                <ButtonLink href="/templates" variant="secondary" size="sm">
-                  Back to templates
-                </ButtonLink>
-              }
-            />
+            <ErrorState title="Template not found" message="It may have been deleted." action={<ButtonLink href="/templates" variant="secondary" size="sm">Back to templates</ButtonLink>} />
           ) : (
             <ErrorState message={error} onRetry={reload} />
           )}
@@ -50,12 +43,7 @@ export function TemplateEditor({ templateId }: { templateId: string | null }) {
     );
   }
   if (templateId && (!data || data.id !== templateId)) {
-    return (
-      <>
-        <PageHeader title="Template" back={back} />
-        <PageSkeleton />
-      </>
-    );
+    return <><PageHeader title="Template" back={back} /><PageSkeleton /></>;
   }
 
   const initial: ComposerValue = data ? { name: data.name, subject: data.subject, body: data.body } : EMPTY;
@@ -72,7 +60,7 @@ export function TemplateEditor({ templateId }: { templateId: string | null }) {
   }
 
   async function onSendTest(args: { to: string; leadId: string; subject: string; body: string }) {
-    const r = await api.post<{ ok: true; providerMessageId: string | null }>("/api/templates/send-test", args);
+    const r = await api.post<{ ok: true; providerMessageId: string | null }>("/api/templates/send-test", { ...args, templateId: templateId ?? undefined });
     return r.providerMessageId;
   }
 
@@ -96,21 +84,16 @@ export function TemplateEditor({ templateId }: { templateId: string | null }) {
         saveLabel={templateId ? "Save" : "Create template"}
         onSave={onSave}
         onSendTest={onSendTest}
-        headerActions={
-          templateId ? (
-            <Button variant="ghost" size="icon" onClick={() => setConfirmDelete(true)} aria-label="Delete template" title="Delete template">
-              <Trash className="text-red-600" />
-            </Button>
-          ) : undefined
-        }
+        headerActions={templateId ? <Button variant="ghost" size="icon" onClick={() => setConfirmDelete(true)} aria-label="Delete template" title="Delete template"><Trash className="text-red-600" /></Button> : undefined}
       />
+      {templateId ? <TemplateAttachment templateId={templateId} /> : null}
       <ConfirmDialog
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
         onConfirm={onDelete}
         destructive
         title="Delete this template?"
-        message="Existing campaigns keep their own copy of the content and are not affected. This cannot be undone."
+        message="Existing campaigns keep their own copy of the content and attachment and are not affected. This cannot be undone."
         confirmLabel="Delete template"
       />
     </>
