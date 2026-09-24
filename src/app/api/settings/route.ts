@@ -17,7 +17,6 @@ const Body = z.object({
   missingVariableBehavior: z.enum(MISSING_VARIABLE_BEHAVIORS).optional(),
   fallbackValues: z.record(z.string().regex(/^[a-z0-9_.-]{1,100}$/i, "Fallback keys must be variable names"), z.string().max(500)).optional(),
   timezone: z.string().max(100).optional(),
-  includeUnsubscribe: z.boolean().optional(),
 });
 
 export const GET = handler(async () => json(settingsDTO(await getSettings())));
@@ -34,8 +33,6 @@ export const PUT = handler(async (req) => {
   if (b.timezone !== undefined && !isValidTimezone(b.timezone)) throw badRequest(`Unknown timezone "${b.timezone}".`);
   const current = effectiveFrom(await getSettingsRow());
   if (b.timezone !== undefined && b.timezone !== current.timezone) {
-    // The quota day is keyed by the timezone; switching mid-day would open a
-    // fresh counter and allow a second full day's quota.
     const usage = await getUsage(current.timezone, current.dailyLimit);
     if (usage.sent > 0) throw badRequest("The timezone can't be changed on a day when emails were already sent (it would reset today's quota). Try again tomorrow.");
   }
@@ -53,7 +50,7 @@ export const PUT = handler(async (req) => {
         ? { fallbackValues: Object.fromEntries(Object.entries(b.fallbackValues).map(([k, v]) => [k.toLowerCase(), v])) }
         : {}),
       ...(b.timezone !== undefined ? { timezone: b.timezone } : {}),
-      ...(b.includeUnsubscribe !== undefined ? { includeUnsubscribe: b.includeUnsubscribe } : {}),
+      // Unsubscribe is intentionally not configurable for this personal-mail workflow.
     },
   });
   return json(settingsDTO(effectiveFrom(row)));
