@@ -301,7 +301,7 @@ export interface DashboardDTO {
     lastRunAt: string | null;
     nextSendAt: string | null;
     lastResult: WorkerResultDTO | null;
-    /** Non-null while all sending is halted until a Resend connection test or a campaign resume clears it. */
+    /** Non-null while all sending is halted until a Gmail connection test or a campaign resume clears it. */
     haltedReason: string | null;
   };
   setup: {
