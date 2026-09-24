@@ -26,13 +26,15 @@ export async function GET(req: Request) {
       );
     }
 
-    // The refresh token is NOT written to source code or the database.
-    // For this single-account deployment, copy it into GOOGLE_REFRESH_TOKEN in the host environment.
+    // For this single-account setup, the callback returns a one-time bootstrap
+    // value only after the user explicitly authorizes the Gmail account.
+    // Do not log or commit this value. Put it in the server environment as
+    // GOOGLE_REFRESH_TOKEN and then remove/disable this bootstrap route.
     return NextResponse.json({
       ok: true,
-      message: "OAuth completed. Copy this one-time refresh token into GOOGLE_REFRESH_TOKEN on the server, then remove this callback route or protect it before public deployment.",
+      message: "OAuth complete. Copy refreshToken into GOOGLE_REFRESH_TOKEN on the server, then disable this bootstrap route before public use.",
       refreshToken: tokens.refresh_token,
-      emailHint: env.fromEmail,
+      account: env.fromEmail,
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 500 });
