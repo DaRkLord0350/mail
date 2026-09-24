@@ -18,7 +18,7 @@ You can import a CSV of leads, write a template with `{{variables}}` taken from 
 | **Safety** | An atomic daily quota that concurrent workers cannot bypass. Unique `(campaign, lead)` and `(campaign, email)` constraints. database-backed queue/idempotency safeguards. A suppression list. Emails go out as plain personal 1:1 messages (no unsubscribe footer or bulk-mail headers by default). |
 | **Tracking** | Dashboard, today's usage (`37 / 100`), campaign progress, an email queue page, and send history with full rendered content and the Gmail message ID. |
 
-Only real data is shown. An email is marked **SENT** only after Resend accepts
+Only real data is shown. An email is marked **SENT** only after Gmail accepts
 it and returns a message ID. MAIL does not invent delivered, opened or clicked
 statistics.
 
@@ -42,14 +42,14 @@ Services (src/lib/server/*)
    ├─ compose.ts      render + unsubscribe footer + outgoing message
    └─ test-email.ts   test sends (no quota)
    ▼
-src/lib/email/resend.ts   the Gmail API transport (legacy filename retained for compatibility)
+src/lib/email/gmail.ts   the Gmail API transport (legacy filename retained for compatibility)
    ▼
 Gmail API
 ```
 
 Pure, unit-tested modules: `src/lib/csv/parse.ts` (CSV parsing, mapping and
 validation), `src/lib/template/render.ts` (personalization engine) and
-`src/lib/email/errors.ts` (classifying Resend errors).
+`src/lib/email/errors.ts` (classifying Gmail errors).
 
 ### Data model (Prisma, `prisma/schema.prisma`)
 
@@ -70,7 +70,7 @@ template never change what was recorded.
 Each worker pass then runs these steps:
 
 1. **Recover** rows stuck in `PROCESSING` for more than 10 minutes and put them
-   back to `PENDING`. They keep the same idempotency key, so Resend deduplicates
+   back to `PENDING`. They keep the same idempotency key, so Gmail deduplicates
    them. If the last attempt was more than 23 hours ago, the key has expired, so
    the row becomes `FAILED / unknown outcome` for you to review instead.
 2. **Promote** scheduled campaigns whose start time has passed to `RUNNING`.
@@ -88,14 +88,14 @@ Each worker pass then runs these steps:
    - Mark the row `PROCESSING` and give it a fencing `lockToken`.
 
    If any step fails, the whole transaction rolls back. The worker then:
-   - sends through Resend, with the idempotency key and a 20 s timeout;
+   - sends through Gmail, with the idempotency key and a 20 s timeout;
    - records the result with a write that must match the `lockToken`, so a
      worker whose lock expired can't overwrite anything;
    - on success, sets `SENT` and stores the message ID;
    - on a temporary failure, sets `PENDING` again with backoff (1 min, 5 min,
      25 min…) up to *Max retries*;
    - on a permanent failure, sets `FAILED`;
-   - on a problem with the API key, sender domain or Resend account quota,
+   - on a problem with the API key, sender domain or Gmail account quota,
      halts all sending and pauses running campaigns until you fix it.
 5. **Complete** campaigns that have nothing left pending.
 
@@ -212,7 +212,7 @@ enough.
 
 ## 6. Gmail setup
 
-MAIL now sends through the Gmail API. Resend is no longer required.
+MAIL now sends through the Gmail API. Gmail is no longer required.
 
 After the Google OAuth flow has produced `GOOGLE_REFRESH_TOKEN`, set the Gmail environment variables, restart the server, and use **Settings → Test Gmail Connection**. A successful connection confirms that the server can access the authorized Gmail account without sending an email.
 
@@ -318,7 +318,7 @@ many recipients this affects. **Retry failed** also leaves such leads alone.
   is **100**. Each campaign can also have a smaller cap.
 - Counted in `DailyUsage` for each **day in the configured timezone**, so it
   resets at local midnight.
-- **Every attempt that reaches Resend counts**, including failures, because
+- **Every attempt that reaches Gmail counts**, including failures, because
   some failures may still have been delivered. That errs on the side of never
   exceeding the limit. Test emails don't count.
 - The reservation is one atomic SQL statement inside the claim transaction.
@@ -380,7 +380,7 @@ page.
 3. Run `npm run build`, then `npm run start`, or deploy to Vercel. The build
    runs `prisma generate`.
 4. Configure a trigger from section 11.
-5. Verify: log in, go to Settings, click **Test Resend Connection**, then send
+5. Verify: log in, go to Settings, click **Test Gmail Connection**, then send
    a test email.
 
 Serve over HTTPS; session cookies are marked `Secure` when `APP_URL` is https.
@@ -394,11 +394,11 @@ and CSV import declare `300`.
 | Symptom | Fix |
 |---|---|
 | Emails stay **PENDING** | No worker is running. Start `npm run worker`, configure cron, or click **Process queue now**. Also check whether the campaign is paused or scheduled, and whether the daily limit has been reached. |
-| "Sending halted: …" / campaigns auto-paused | Resend rejected the API key, the sender domain, or your Resend quota. Fix it, click **Test Resend Connection** (which clears the halt), then **Resume**. |
-| 403 "You can only send testing emails to your own email address" | Verify your domain in Resend and set `FROM_EMAIL` on it. |
+| "Sending halted: …" / campaigns auto-paused | Gmail rejected the API key, the sender domain, or your Gmail quota. Fix it, click **Test Gmail Connection** (which clears the halt), then **Resume**. |
+| 403 "You can only send testing emails to your own email address" | Verify your domain in Gmail and set `FROM_EMAIL` on it. |
 | "Missing personalization: {{first_name}}" skips | Add `{{first_name\|there}}`, or change the missing-variable behavior to Fallback or Remove. |
 | "Unknown variable(s)" when starting | The template uses a variable that isn't in any imported column. Check the spelling in the variable picker. |
-| `FAILED` with `unknown_outcome` | A send was interrupted and could not be safely retried. Check the Resend dashboard before retrying manually. |
+| `FAILED` with `unknown_outcome` | A send was interrupted and could not be safely retried. Check the Gmail dashboard before retrying manually. |
 | Cron returns 401 / 503 | Wrong or missing `CRON_SECRET`. |
 | Login says "not configured" | Set `ADMIN_PASSWORD` and `SESSION_SECRET` (16+ characters). |
 | `relation does not exist` | Run `npx prisma migrate deploy` with the same `DATABASE_URL`, including `?schema=`. |
@@ -408,7 +408,7 @@ and CSV import declare `300`.
 
 ## 14. Security notes
 
-- All Resend calls are server-side, in `src/lib/email/resend.ts` only. Secrets
+- All Gmail calls are server-side, in `src/lib/email/gmail.ts` only. Secrets
   are read only in `src/lib/server/env.ts` and never sent to the client. The
   Settings page shows a masked key hint (`re_…abcd`).
 - `.env` is git-ignored (so is lead CSV data in the project root). Only
