@@ -1,5 +1,5 @@
 // Server-only environment access. Never import this from client components.
-// All values are server-side; nothing is NEXT_PUBLIC_.
+// All values are server-side; nothing is exposed through NEXT_PUBLIC_.
 
 function int(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
@@ -22,7 +22,7 @@ export const env = {
   get fromEmail() { return str("FROM_EMAIL") || "ventorynex@gmail.com"; },
   get fromName() { return str("FROM_NAME") || "NexVentory"; },
 
-  /** Application safety ceiling. Google may impose a lower account limit. */
+  // Application-level safety ceiling; this does not increase Google's limit.
   get dailySendLimit() { return int("DAILY_SEND_LIMIT", 100, 1, 500); },
   get defaultSendDelaySeconds() { return int("DEFAULT_SEND_DELAY_SECONDS", 60, 0, 3600); },
   get cronBatchSize() { return int("CRON_BATCH_SIZE", 5, 1, 50); },
@@ -30,7 +30,7 @@ export const env = {
   get cronSecret() { return str("CRON_SECRET"); },
   get adminPassword() { return str("ADMIN_PASSWORD"); },
   get sessionSecret() { return str("SESSION_SECRET"); },
-  get appUrl() { return (str("APP_URL") || "http://localhost:3000").replace(/\\/+$/, ""); },
+  get appUrl() { return (str("APP_URL") || "http://localhost:3000").replace(/\/+$/, ""); },
   get timezone() { return str("APP_TIMEZONE") || "Asia/Kolkata"; },
   get enableInternalWorker() { return str("ENABLE_INTERNAL_WORKER") === "true"; },
   get isProduction() { return process.env.NODE_ENV === "production"; },
