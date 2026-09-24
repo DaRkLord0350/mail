@@ -75,7 +75,7 @@ export function settingsDTO(s: EffectiveSettings): SettingsDTO {
     fallbackValues: s.fallbackValues,
     timezone: s.timezone,
     includeUnsubscribe: s.includeUnsubscribe,
-    resend: { configured: Boolean(env.resendApiKey), keyHint: maskKey(env.resendApiKey) },
+    gmail: { configured: Boolean(env.googleRefreshToken), keyHint: env.googleRefreshToken ? "OAuth configured" : null },
     cron: { configured: Boolean(env.cronSecret), batchSize: env.cronBatchSize },
     sender: { configured: Boolean(sender), formatted: sender },
   };
