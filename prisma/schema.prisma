@@ -1,0 +1,285 @@
+// MAIL — cold email outreach system
+// All tables live in the Postgres schema given by `?schema=` in DATABASE_URL
+// (default: "mail"), so MAIL never collides with other tables in the database.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+/// Lead-level status mirrors the most recent delivery outcome for that lead.
+enum LeadStatus {
+  READY
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum CampaignStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  STOPPED
+}
+
+enum DeliveryStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum MissingVariableBehavior {
+  FALLBACK // use {{var|fallback}} or the configured fallback; skip the lead if none exists
+  REMOVE // replace the missing variable with an empty string
+  SKIP // flag the lead for review: the delivery is marked SKIPPED
+}
+
+enum SuppressionSource {
+  MANUAL
+  UNSUBSCRIBE
+  BOUNCE
+  COMPLAINT
+}
+
+model Lead {
+  id           String     @id @default(cuid())
+  /// Always stored trimmed + lowercased. Unique across all imports.
+  email        String     @unique
+  firstName    String?
+  lastName     String?
+  companyName  String?
+  displayName  String?
+  website      String?
+  customDomain String?
+  phone        String?
+
+  status     LeadStatus @default(READY)
+  lastSentAt DateTime? @db.Timestamptz(3)
+  sendCount  Int        @default(0)
+
+  /// Full original CSV row (normalized snake_case keys -> string values).
+  metadata      Json         @default("{}")
+  importBatchId String?
+  importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+
+  campaignLeads CampaignLead[]
+  deliveries    EmailDelivery[]
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([status])
+  @@index([companyName])
+  @@index([lastSentAt])
+  @@index([createdAt])
+}
+
+model ImportBatch {
+  id               String   @id @default(cuid())
+  fileName         String
+  /// Original CSV headers, in order.
+  columns          Json
+  /// field -> CSV header chosen in the mapping UI.
+  mapping          Json
+  totalRows        Int
+  validLeads       Int
+  createdLeads     Int
+  updatedLeads     Int
+  invalidEmails    Int
+  duplicateEmails  Int
+  blankRows        Int
+  malformedRows    Int
+  missingNames     Int
+  missingCompanies Int
+  alreadyContacted Int
+  readyToSend      Int
+  /// Row-level issues: [{ row, type, message, email? }]
+  issues           Json     @default("[]")
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+  leads            Lead[]
+}
+
+model Template {
+  id        String     @id @default(cuid())
+  name      String
+  subject   String
+  body      String
+  campaigns Campaign[]
+  createdAt DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime   @updatedAt @db.Timestamptz(3)
+}
+
+model Campaign {
+  id              String         @id @default(cuid())
+  name            String
+  /// Source template (optional). Subject/body below are the campaign's own copy,
+  /// frozen when the campaign starts; each delivery also stores its rendered output.
+  templateId      String?
+  template        Template?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  subjectTemplate String
+  bodyTemplate    String
+  status          CampaignStatus @default(DRAFT)
+  /// Per-campaign daily cap. The effective cap is min(this, global daily limit).
+  dailyLimit      Int            @default(100)
+  scheduledAt     DateTime? @db.Timestamptz(3)
+  timezone        String         @default("Asia/Kolkata")
+  /// Last campaign-level error (e.g. invalid Resend API key auto-paused the campaign).
+  lastError       String?
+
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+  startedAt   DateTime? @db.Timestamptz(3)
+  pausedAt    DateTime? @db.Timestamptz(3)
+  completedAt DateTime? @db.Timestamptz(3)
+
+  campaignLeads CampaignLead[]
+  deliveries    EmailDelivery[]
+
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+/// Recipients selected for a campaign while it is a draft.
+model CampaignLead {
+  id         String   @id @default(cuid())
+  campaignId String
+  leadId     String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([campaignId, leadId])
+  @@index([leadId])
+}
+
+/// One row per (campaign, lead): the persistent send queue and the audit log.
+model EmailDelivery {
+  id         String   @id @default(cuid())
+  campaignId String
+  leadId     String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Restrict)
+
+  email           String
+  /// Rendered content, frozen at campaign start (template versioning / audit trail).
+  renderedSubject String
+  renderedBody    String
+  /// Raw templates used to render this delivery.
+  subjectTemplate String
+  bodyTemplate    String
+
+  status            DeliveryStatus @default(PENDING)
+  providerMessageId String?
+  attempts          Int            @default(0)
+  errorMessage      String?
+  errorCode         String?
+  /// Earliest time the worker may (re)try this delivery (retry backoff).
+  nextAttemptAt     DateTime       @default(now()) @db.Timestamptz(3)
+  /// Set while PROCESSING; stale locks are recovered back to PENDING.
+  lockedAt          DateTime? @db.Timestamptz(3)
+  /// Fencing token of the worker that holds the PROCESSING lock. Finalize
+  /// writes must match it, so a worker whose lock expired can't overwrite.
+  lockToken         String?
+  /// PERMANENT | TRANSIENT | AUTH | UNKNOWN (for retry-failed filtering)
+  errorKind         String?
+  /// Idempotency key for the in-flight Resend request. Survives crash recovery so
+  /// a recovered delivery reuses it and Resend deduplicates the send.
+  idempotencyKey    String?
+  /// Exact outgoing message sent with `idempotencyKey`. Retries that reuse the
+  /// key resend this byte-identical payload (Resend rejects a changed payload).
+  payload           Json?
+  lastAttemptAt     DateTime? @db.Timestamptz(3)
+  sentAt            DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([campaignId, leadId])
+  /// A re-imported lead (new id, same address) can never get the same campaign twice.
+  @@unique([campaignId, email])
+  @@index([campaignId, status])
+  @@index([status, nextAttemptAt, createdAt])
+  @@index([status, lockedAt])
+  @@index([leadId])
+  @@index([sentAt])
+  @@index([lastAttemptAt])
+  @@index([createdAt])
+}
+
+model Suppression {
+  id        String            @id @default(cuid())
+  email     String            @unique
+  reason    String?
+  source    SuppressionSource @default(MANUAL)
+  createdAt DateTime          @default(now()) @db.Timestamptz(3)
+}
+
+/// Persistent daily send counter. `scope` is "global" or a campaign id.
+/// `date` is YYYY-MM-DD in the configured timezone, so the count resets
+/// naturally at local midnight (a new row is used).
+model DailyUsage {
+  id         String   @id @default(cuid())
+  date       String
+  scope      String   @default("global")
+  emailsSent Int      @default(0)
+  dailyLimit Int
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([date, scope])
+}
+
+/// Singleton (id = 1). Values here override env defaults; env DAILY_SEND_LIMIT
+/// remains a hard ceiling that the UI cannot exceed.
+model Settings {
+  id                      Int                     @id @default(1)
+  fromName                String?
+  fromEmail               String?
+  replyTo                 String?
+  dailyLimit              Int?
+  sendDelaySeconds        Int?
+  maxRetries              Int                     @default(3)
+  missingVariableBehavior MissingVariableBehavior @default(SKIP)
+  /// variable -> fallback value, e.g. { "first_name": "there" }
+  fallbackValues          Json                    @default("{}")
+  timezone                String                  @default("Asia/Kolkata")
+  includeUnsubscribe      Boolean                 @default(false)
+  updatedAt               DateTime                @updatedAt @db.Timestamptz(3)
+}
+
+/// Global pacing gate (singleton id = 1). Workers atomically claim the next send
+/// slot so concurrent workers still respect the delay between emails.
+model WorkerState {
+  id         Int       @id @default(1)
+  nextSendAt DateTime  @default(now()) @db.Timestamptz(3)
+  lastRunAt  DateTime? @db.Timestamptz(3)
+  lastResult Json?
+  /// Set when Resend rejects the API key: all sending halts until a successful
+  /// connection test or a campaign resume clears it.
+  haltedReason String?
+  updatedAt  DateTime  @updatedAt @db.Timestamptz(3)
+}
+
+/// Test emails: logged for audit, never counted against the daily quota.
+model TestEmail {
+  id                String   @id @default(cuid())
+  to                String
+  leadId            String?
+  campaignId        String?
+  renderedSubject   String
+  renderedBody      String
+  status            String
+  providerMessageId String?
+  errorMessage      String?
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+}
