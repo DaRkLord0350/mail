@@ -262,7 +262,7 @@ export interface SettingsDTO {
   fallbackValues: Record<string, string>;
   timezone: string;
   includeUnsubscribe: boolean;
-  resend: { configured: boolean; keyHint: string | null };
+  gmail: { configured: boolean; keyHint: string | null };
   cron: { configured: boolean; batchSize: number };
   sender: { configured: boolean; formatted: string | null };
 }
