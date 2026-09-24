@@ -151,11 +151,11 @@ function SettingsForm({ initial }: { initial: SettingsDTO }) {
     }
   }
 
-  async function testResend() {
+  async function testGmail() {
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await api.post<{ ok: boolean; message: string }>("/api/resend/test");
+      const r = await api.post<{ ok: boolean; message: string }>("/api/gmail/test");
       setTestResult(r);
     } catch (err) {
       setTestResult({ ok: false, message: errorMessage(err) });
@@ -174,7 +174,7 @@ function SettingsForm({ initial }: { initial: SettingsDTO }) {
             <Field label="From name" htmlFor="s-from-name">
               <Input id="s-from-name" value={form.fromName} onChange={(e) => set("fromName", e.target.value)} placeholder="Rahul from Acme" />
             </Field>
-            <Field label="From email" htmlFor="s-from-email" error={errors.fromEmail} hint="Must be on a domain verified in Resend.">
+            <Field label="From email" htmlFor="s-from-email" error={errors.fromEmail} hint="Must match the Gmail account authorized with OAuth.">
               <Input
                 id="s-from-email"
                 type="email"
@@ -367,18 +367,18 @@ function SettingsForm({ initial }: { initial: SettingsDTO }) {
         </CardBody>
       </Card>
 
-      {/* Resend */}
+      {/* Gmail */}
       <Card>
-        <CardHeader title="Resend" icon={<KeyRound />} description="The API key lives only on the server (RESEND_API_KEY) and is never sent to the browser." />
+        <CardHeader title="Gmail" icon={<KeyRound />} description="The API key lives only on the server (GOOGLE_REFRESH_TOKEN) and is never sent to the browser." />
         <CardBody className="space-y-3">
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <span className="text-slate-600">API connection:</span>
-            {settings.resend.configured ? <Badge tone="green" dot>Configured</Badge> : <Badge tone="red" dot>Not configured</Badge>}
-            {settings.resend.keyHint && <code className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-700">{settings.resend.keyHint}</code>}
+            {settings.gmail.configured ? <Badge tone="green" dot>Configured</Badge> : <Badge tone="red" dot>Not configured</Badge>}
+            {settings.gmail.keyHint && <code className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-700">{settings.gmail.keyHint}</code>}
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant="secondary" onClick={testResend} loading={testing}>
-              Test Resend Connection
+            <Button variant="secondary" onClick={testGmail} loading={testing}>
+              Test Gmail Connection
             </Button>
             {testResult && (
               <p className={cn("flex items-center gap-1.5 text-sm font-medium", testResult.ok ? "text-emerald-700" : "text-red-700")} role="status">
@@ -387,9 +387,9 @@ function SettingsForm({ initial }: { initial: SettingsDTO }) {
               </p>
             )}
           </div>
-          {!settings.resend.configured && (
-            <Alert tone="warning" title="Resend is not configured">
-              Set <code className="font-mono">RESEND_API_KEY</code> in the server environment and restart. Campaigns can&apos;t send until it is.
+          {!settings.gmail.configured && (
+            <Alert tone="warning" title="Gmail is not configured">
+              Set <code className="font-mono">GOOGLE_REFRESH_TOKEN</code> in the server environment and restart. Campaigns can&apos;t send until it is.
             </Alert>
           )}
         </CardBody>
