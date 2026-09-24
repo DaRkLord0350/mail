@@ -2,45 +2,35 @@ import { renderEmail, leadContext, textToHtml, type LeadLike, type RenderedEmail
 import { isValidEmail } from "@/lib/email-address";
 import type { OutgoingEmail } from "@/lib/email/resend";
 import { formatSender, type EffectiveSettings } from "./settings";
-import { unsubscribePostUrl, unsubscribeUrl } from "./tokens";
-
-export const UNSUBSCRIBE_FOOTER = (url: string) => `\n\n--\nNot interested? Unsubscribe here: ${url}`;
 
 export interface LeadRender extends RenderedEmail {
   to: string;
   skipReason: string | null;
 }
 
-/**
- * Render subject/body for one lead exactly as it will be sent (including the
- * unsubscribe footer), and decide whether the lead must be skipped.
- */
+/** Render subject/body exactly as it will be sent and decide whether the lead must be skipped. */
 export function renderForLead(
   subjectTemplate: string,
   bodyTemplate: string,
   lead: LeadLike,
   settings: EffectiveSettings,
-  opts: { suppressed?: boolean; /** Address the unsubscribe link is for (test sends use the tester's). */ unsubscribeFor?: string } = {},
+  opts: { suppressed?: boolean } = {},
 ): LeadRender {
-  const unsub = unsubscribeUrl(opts.unsubscribeFor ?? lead.email);
-  const ctx = leadContext(lead, { unsubscribe_url: unsub });
+  // Personal 1-to-1 mail: no unsubscribe variable or footer is injected.
+  const ctx = leadContext(lead);
   const r = renderEmail(subjectTemplate, bodyTemplate, ctx, {
     behavior: settings.missingVariableBehavior,
     fallbacks: settings.fallbackValues,
   });
-  let body = r.body;
-  if (settings.includeUnsubscribe && !/\{\{\s*unsubscribe_url\s*(\|[^}]*)?\}\}/i.test(bodyTemplate)) {
-    body += UNSUBSCRIBE_FOOTER(unsub);
-  }
 
   let skipReason: string | null = null;
   if (opts.suppressed) skipReason = "Email address is on the suppression list";
   else if (!isValidEmail(lead.email)) skipReason = "Invalid email address";
   else if (r.blocked) skipReason = `Missing personalization: ${r.missing.map((m) => `{{${m}}}`).join(", ")}`;
   else if (!r.subject.trim()) skipReason = "Rendered subject is empty";
-  else if (!body.trim()) skipReason = "Rendered body is empty";
+  else if (!r.body.trim()) skipReason = "Rendered body is empty";
 
-  return { ...r, body, to: lead.email, skipReason };
+  return { ...r, to: lead.email, skipReason };
 }
 
 export function buildOutgoing(
@@ -49,11 +39,6 @@ export function buildOutgoing(
 ): OutgoingEmail {
   const from = formatSender(settings);
   if (!from) throw new Error("Sender is not configured: set FROM_EMAIL (or From Email in Settings).");
-  const headers: Record<string, string> = {};
-  if (settings.includeUnsubscribe) {
-    headers["List-Unsubscribe"] = `<${unsubscribePostUrl(args.to)}>`;
-    headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
-  }
   return {
     from,
     to: args.to,
@@ -61,7 +46,9 @@ export function buildOutgoing(
     text: args.body,
     html: textToHtml(args.body),
     replyTo: settings.replyTo || undefined,
-    headers,
+    // Deliberately no List-Unsubscribe headers: this app is configured for
+    // direct, personal outreach rather than newsletter-style mail.
+    headers: {},
     tags: args.tags,
     idempotencyKey: args.idempotencyKey,
   };
