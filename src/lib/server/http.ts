@@ -54,7 +54,11 @@ export function errorResponse(e: unknown): NextResponse {
   return NextResponse.json({ error: "Internal server error" }, { status: 500 });
 }
 
-const MAX_JSON_BYTES = 1024 * 1024;
+// PDF uploads are sent as JSON with base64 content. An 8 MB binary PDF becomes
+// roughly 10.7 MB after base64 encoding, plus JSON overhead, so the old 1 MB
+// JSON guard rejected perfectly valid PDF uploads around 750 KB and above.
+// Keep this comfortably above the 8 MB PDF limit without making it unlimited.
+const MAX_JSON_BYTES = 12 * 1024 * 1024;
 
 export async function readJson<S extends z.ZodType>(req: Request, schema: S): Promise<z.infer<S>> {
   const declared = Number(req.headers.get("content-length") ?? 0);
