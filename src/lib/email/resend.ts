@@ -44,8 +44,6 @@ function buildRaw(email: OutgoingEmail): string {
     "To: " + email.to,
     "Subject: " + encodeHeader(email.subject),
     email.replyTo ? "Reply-To: " + email.replyTo : "",
-    email.headers?.["List-Unsubscribe"] ? "List-Unsubscribe: " + email.headers["List-Unsubscribe"] : "",
-    email.headers?.["List-Unsubscribe-Post"] ? "List-Unsubscribe-Post: " + email.headers["List-Unsubscribe-Post"] : "",
     "MIME-Version: 1.0",
     "Content-Type: text/html; charset=UTF-8",
   ].filter(Boolean).join("\r\n");
