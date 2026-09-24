@@ -1,6 +1,6 @@
 import type { Settings } from "@prisma/client";
 import { prisma } from "./db";
-import { env, maskKey } from "./env";
+import { env } from "./env";
 import type { MissingVariableBehavior, SettingsDTO } from "@/lib/types";
 
 export interface EffectiveSettings {
@@ -15,7 +15,6 @@ export interface EffectiveSettings {
   missingVariableBehavior: MissingVariableBehavior;
   fallbackValues: Record<string, string>;
   timezone: string;
-  includeUnsubscribe: boolean;
 }
 
 export async function getSettingsRow(): Promise<Settings> {
@@ -44,7 +43,6 @@ export function effectiveFrom(row: Settings): EffectiveSettings {
     missingVariableBehavior: row.missingVariableBehavior,
     fallbackValues: toRecord(row.fallbackValues),
     timezone: row.timezone || env.timezone,
-    includeUnsubscribe: row.includeUnsubscribe,
   };
 }
 
@@ -55,8 +53,6 @@ export async function getSettings(): Promise<EffectiveSettings> {
 /** "Name <email>" or null when no sender is configured. */
 export function formatSender(s: Pick<EffectiveSettings, "fromName" | "fromEmail">): string | null {
   if (!s.fromEmail) return null;
-  // Always quote the display name (RFC 5322): "Anshuman, Founder" would
-  // otherwise parse as two addresses.
   const name = s.fromName.replace(/["<>\r\n\\]/g, "").trim();
   return name ? `"${name}" <${s.fromEmail}>` : s.fromEmail;
 }
@@ -74,7 +70,6 @@ export function settingsDTO(s: EffectiveSettings): SettingsDTO {
     missingVariableBehavior: s.missingVariableBehavior,
     fallbackValues: s.fallbackValues,
     timezone: s.timezone,
-    includeUnsubscribe: s.includeUnsubscribe,
     gmail: { configured: Boolean(env.googleRefreshToken), keyHint: env.googleRefreshToken ? "OAuth configured" : null },
     cron: { configured: Boolean(env.cronSecret), batchSize: env.cronBatchSize },
     sender: { configured: Boolean(sender), formatted: sender },
