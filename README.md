@@ -1,40 +1,10 @@
 # MAIL — Cold Email Outreach System
 
-MAIL is a self-contained internal web app for running **personalized cold-email
-campaigns through [Resend](https://resend.com)** with a **hard daily sending
-limit (default 100 emails/day)**.
+MAIL is a self-contained internal web app for running personalized cold-email campaigns through the **Gmail API** from your authorized Gmail account (currently intended for `ventorynex@gmail.com`).
 
-You can import a CSV of leads, write a template with `{{variables}}` taken from
-the CSV's columns, and preview exactly what each person will receive. You can
-send yourself a test, then launch (or schedule) a campaign. After that, a
-persistent server-side queue does the sending. It is paced, respects the quota,
-retries safely, never sends duplicates, and records every attempt.
+You can import a CSV of leads, write a template with `{{variables}}` taken from the CSV's columns, and preview exactly what each person will receive. You can send yourself a test, then launch (or schedule) a campaign. After that, a persistent server-side queue does the sending. It is paced, respects the application quota, retries safely, never sends duplicates within the queue, and records every attempt.
 
-> MAIL is fully standalone. It does not import from, connect to or depend on
-> any other project. All of its tables live in their own Postgres schema
-> (`?schema=mail`).
-
----
-
-## Contents
-
-1. [What MAIL does](#1-what-mail-does)
-2. [Architecture](#2-architecture)
-3. [Installation](#3-installation)
-4. [Environment variables](#4-environment-variables)
-5. [Database setup](#5-database-setup)
-6. [Resend setup](#6-resend-setup)
-7. [CSV import](#7-csv-import)
-8. [Template variables](#8-template-variables)
-9. [Creating a campaign](#9-creating-a-campaign)
-10. [The daily sending limit](#10-the-daily-sending-limit)
-11. [Cron / worker setup](#11-cron--worker-setup)
-12. [Production deployment](#12-production-deployment)
-13. [Troubleshooting](#13-troubleshooting)
-14. [Security notes](#14-security-notes)
-15. [Testing](#15-testing)
-
----
+> Gmail's own per-user sending limits still apply. The MAIL quota is an additional application-level safety ceiling; it cannot increase Google's limit.
 
 ## 1. What MAIL does
 
@@ -45,8 +15,8 @@ retries safely, never sends duplicates, and records every attempt.
 | **Personalization** | `{{first_name}}` and `{{first_name\|there}}` syntax. You choose what happens when a variable is missing: *skip the lead*, *remove the variable*, or *use a fallback*. A literal `{{first_name}}` is never sent. |
 | **Campaigns** | Draft → Ready → Running / Scheduled → Paused ⇄ Running → Completed, or Stopped. You pick recipients, run a dry-run preview, confirm, then start now or at a scheduled date, time and timezone. Pause, resume, stop, and retry failed sends. |
 | **Queue** | A persistent `EmailDelivery` queue in Postgres. Workers are triggered by cron, by `npm run worker`, or by the "Process now" button. Sends are paced (default 30 s apart). Retries are capped with backoff. Stuck deliveries are recovered after a crash. |
-| **Safety** | An atomic daily quota that concurrent workers cannot bypass. Unique `(campaign, lead)` and `(campaign, email)` constraints. Resend idempotency keys. A suppression list. Emails go out as plain personal 1:1 messages (no unsubscribe footer or bulk-mail headers by default). |
-| **Tracking** | Dashboard, today's usage (`37 / 100`), campaign progress, an email queue page, and send history with full rendered content and the Resend message ID. |
+| **Safety** | An atomic daily quota that concurrent workers cannot bypass. Unique `(campaign, lead)` and `(campaign, email)` constraints. database-backed queue/idempotency safeguards. A suppression list. Emails go out as plain personal 1:1 messages (no unsubscribe footer or bulk-mail headers by default). |
+| **Tracking** | Dashboard, today's usage (`37 / 100`), campaign progress, an email queue page, and send history with full rendered content and the Gmail message ID. |
 
 Only real data is shown. An email is marked **SENT** only after Resend accepts
 it and returns a message ID. MAIL does not invent delivered, opened or clicked
@@ -72,9 +42,9 @@ Services (src/lib/server/*)
    ├─ compose.ts      render + unsubscribe footer + outgoing message
    └─ test-email.ts   test sends (no quota)
    ▼
-src/lib/email/resend.ts   the ONLY module that talks to Resend (sendEmail, testConnection)
+src/lib/email/resend.ts   the Gmail API transport (legacy filename retained for compatibility)
    ▼
-Resend API
+Gmail API
 ```
 
 Pure, unit-tested modules: `src/lib/csv/parse.ts` (CSV parsing, mapping and
@@ -169,28 +139,30 @@ Log in with `ADMIN_PASSWORD`.
 
 ## 4. Environment variables
 
-All variables are **server-only**. No `NEXT_PUBLIC_` variables exist, so
-nothing here can reach the browser bundle.
+All variables are **server-only**. No `NEXT_PUBLIC_` variables exist.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `RESEND_API_KEY` | yes (to send) | – | Resend API key. The dashboard only ever shows a masked hint. |
-| `FROM_EMAIL` | yes (to send) | – | Sender address on a domain verified in Resend. Can be overridden in Settings. |
-| `FROM_NAME` | recommended | – | Sender name, e.g. `Anshuman`. Produces `Anshuman <hello@yourdomain.com>`. |
+| `GOOGLE_CLIENT_ID` | yes | – | OAuth 2.0 client ID from Google Cloud. |
+| `GOOGLE_CLIENT_SECRET` | yes | – | OAuth 2.0 client secret. |
+| `GOOGLE_REDIRECT_URI` | yes | local callback example | Must exactly match an Authorized redirect URI in Google Cloud. |
+| `GOOGLE_REFRESH_TOKEN` | yes (to send) | – | Offline OAuth refresh token for the Gmail account that authorized the app. |
+| `FROM_EMAIL` | yes | `ventorynex@gmail.com` | Sender identity. Use the same Gmail account that authorized OAuth. |
+| `FROM_NAME` | recommended | `NexVentory` | Display name. |
 | `DATABASE_URL` | yes | – | Postgres URL. Keep `?schema=mail`. |
-| `DIRECT_URL` | yes | – | Direct or session-pooler URL used for migrations (can equal `DATABASE_URL`). |
-| `TEST_DATABASE_URL` | tests only | – | Same database with a **different schema** (e.g. `mail_test`). |
-| `DAILY_SEND_LIMIT` | – | `100` | **Hard ceiling** on campaign emails per day. Settings can lower it but never raise it. |
-| `DEFAULT_SEND_DELAY_SECONDS` | – | `30` | Minimum gap between two campaign emails, enforced across all workers. |
-| `CRON_BATCH_SIZE` | – | `10` | Maximum emails per cron invocation. |
-| `CRON_MAX_RUNTIME_SECONDS` | – | `50` | Time budget per invocation of `npm run worker`. The cron HTTP route caps it at 35 s so the last send (up to 20 s) finishes inside its 60 s `maxDuration`. |
-| `APP_TIMEZONE` | – | `Asia/Kolkata` | Default timezone for the daily quota's day boundary. Also editable in Settings. |
-| `CRON_SECRET` | yes (for cron) | – | Bearer token for `/api/cron/process-email-queue`. |
+| `DIRECT_URL` | yes | – | Direct/session-pooler URL for migrations. |
+| `TEST_DATABASE_URL` | tests only | – | Separate test schema. |
+| `DAILY_SEND_LIMIT` | – | `100` | MAIL's hard application ceiling. Google may impose a lower limit. |
+| `DEFAULT_SEND_DELAY_SECONDS` | – | `60` | Minimum gap between campaign emails. |
+| `CRON_BATCH_SIZE` | – | `5` | Maximum emails per worker pass. |
+| `CRON_MAX_RUNTIME_SECONDS` | – | `50` | Worker time budget. |
+| `APP_TIMEZONE` | – | `Asia/Kolkata` | Quota/schedule timezone. |
+| `CRON_SECRET` | yes for cron | – | Bearer token for the queue endpoint. |
 | `ADMIN_PASSWORD` | yes | – | Dashboard login password. |
-| `SESSION_SECRET` | yes | – | 32+ random bytes. Signs session cookies and unsubscribe links. |
-| `UNSUBSCRIBE_SECRET` | recommended | = `SESSION_SECRET` | Separate key for unsubscribe links, so rotating `SESSION_SECRET` never breaks links in emails already sent. |
-| `APP_URL` | yes | `http://localhost:3000` | Public base URL, used in unsubscribe links. |
-| `ENABLE_INTERNAL_WORKER` | – | `false` | Runs the worker inside the Next.js server every 30 s. For single-server hosts. |
+| `SESSION_SECRET` | yes | – | Session signing secret. |
+| `UNSUBSCRIBE_SECRET` | recommended | = `SESSION_SECRET` | Separate unsubscribe signing key. |
+| `APP_URL` | yes | `http://localhost:3000` | Public app URL. |
+| `ENABLE_INTERNAL_WORKER` | – | `false` | Run worker inside a single long-running server. |
 
 Generate secrets with:
 
@@ -198,7 +170,17 @@ Generate secrets with:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
----
+### Google OAuth setup
+
+1. In Google Cloud Console, enable **Gmail API**.
+2. Configure **OAuth consent / Google Auth Platform** for the application.
+3. Create a **Web application** OAuth client.
+4. Add the exact redirect URI used by MAIL, for example:
+   `http://localhost:3000/api/auth/google/callback`.
+5. Run MAIL's OAuth flow and authorize **`ventorynex@gmail.com`**.
+6. Store the resulting offline refresh token as `GOOGLE_REFRESH_TOKEN` on the server.
+
+Never commit client secrets or refresh tokens.
 
 ## 5. Database setup
 
@@ -228,27 +210,11 @@ enough.
 
 ---
 
-## 6. Resend setup
+## 6. Gmail setup
 
-1. Create an account at resend.com and **add and verify your sending domain**
-   (DNS: SPF, DKIM and optionally DMARC).
-2. Create an API key.
-   - **Full access** lets "Test Resend Connection" list your domains and check
-     that `FROM_EMAIL`'s domain is verified.
-   - A **Sending access** key works too; the test then only confirms the key is
-     valid.
-3. Set `RESEND_API_KEY`, `FROM_EMAIL` (on the verified domain) and `FROM_NAME`.
-4. In **Settings**, click **Test Resend Connection**. It authenticates without
-   sending anything.
-5. In the template editor, send yourself a **Test Email**. Test emails are
-   labeled `[TEST]`, logged separately, and **do not count** toward the daily
-   quota.
+MAIL now sends through the Gmail API. Resend is no longer required.
 
-> Before your domain is verified, Resend only lets you send to your own account
-> address. MAIL recognizes that 403 response and **halts sending**; it doesn't
-> burn through your leads. The campaign is paused with the error shown.
-
----
+After the Google OAuth flow has produced `GOOGLE_REFRESH_TOKEN`, set the Gmail environment variables, restart the server, and use **Settings → Test Gmail Connection**. A successful connection confirms that the server can access the authorized Gmail account without sending an email.
 
 ## 7. CSV import
 
